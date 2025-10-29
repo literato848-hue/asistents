@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="lv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Lip Sync Animation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #1e3c72, #2a5298);
+            font-family: 'Arial', sans-serif;
+            overflow: hidden;
+        }
+
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+            color: white;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 14px;
+        }
+
+        input[type="range"] {
+            width: 200px;
+            margin-bottom: 10px;
+        }
+
+        button {
+            background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
+            border: none;
+            padding: 12px 20px;
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+            margin-right: 10px;
+            margin-bottom: 10px;
+            transition: transform 0.2s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        #fileInput {
+            margin-bottom: 10px;
+        }
+
+        #audioVisualizer {
+            width: 250px;
+            height: 60px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 5px;
+            margin-top: 10px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .freq-bar {
+            position: absolute;
+            bottom: 0;
+            width: 4px;
+            background: linear-gradient(to top, #ff6b6b, #4ecdc4, #45b7d1);
+            border-radius: 2px 2px 0 0;
+            transition: height 0.1s ease;
+        }
+
+        #status {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 10px;
+            font-size: 12px;
+        }
+
+        #morphTargets {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 15px;
+            border-radius: 10px;
+            max-width: 250px;
+        }
+
+        .morph-control {
+            margin-bottom: 10px;
+        }
+
+        .morph-control label {
+            font-size: 12px;
+            margin-bottom: 3px;
+        }
+
+        .morph-control input {
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="controls">
+            <h3>3D Lip Sync Controls</h3>
+            
+            <div class="control-group">
+                <label for="glbFile">GLB Modelis:</label>
+                <input type="file" id="glbFile" accept=".glb,.gltf">
+            </div>
+
+            <div class="control-group">
+                <label for="audioFile">Audio Fails:</label>
+                <input type="file" id="audioFile" accept="audio/*">
+            </div>
+
+            <div class="control-group">
+                <button id="playBtn">▶ Play</button>
+                <button id="pauseBtn">⏸ Pause</button>
+                <button id="stopBtn">⏹ Stop</button>
+            </div>
+
+            <div class="control-group">
+                <label for="sensitivity">Audio Jutība:</label>
+                <input type="range" id="sensitivity" min="0.1" max="3.0" step="0.1" value="1.0">
+                <span id="sensitivityValue">1.0</span>
+            </div>
+
+            <div class="control-group">
+                <label for="smoothing">Gludināšana:</label>
+                <input type="range" id="smoothing" min="0" max="0.99" step="0.01" value="0.8">
+                <span id="smoothingValue">0.8</span>
+            </div>
+
+            <div id="audioVisualizer"></div>
+        </div>
+
+        <div id="morphTargets">
+            <h4>Morph Targets</h4>
+            <div id="morphControls"></div>
+        </div>
+
+        <div id="status">
+            Status: Gaidām modeļa un audio failu...
+        </div>
+    </div>
+
+    <script>
+        class LipSyncAnimator {
+            constructor() {
+                this.scene = null;
+                this.camera = null;
+                this.renderer = null;
+                this.model = null;
+                this.mixer = null;
+                this.morphTargets = {};
+                this.audioContext = null;
+                this.analyser = null;
+                this.dataArray = null;
+                this.audio = null;
+                this.isPlaying = false;
+                this.sensitivity = 1.0;
+                this.smoothing = 0.8;
+                this.previousValues = {};
+                
+                // Viseme mapping - audio frekvences uz mutes pozīcijām
+                this.visemeMap = {
+                    'A': { frequencies: [800, 1200], morphs: ['mouthOpen', 'jawOpen'] },
+                    'E': { frequencies: [400, 2000], morphs: ['mouthSmile', 'mouthWide'] },
+                    'I': { frequencies: [300, 2400], morphs: ['mouthSmile'] },
+                    'O': { frequencies: [500, 900], morphs: ['mouthFunnel', 'mouthPucker'] },
+                    'U': { frequencies: [300, 600], morphs: ['mouthFunnel', 'mouthPucker'] },
+                    'M': { frequencies: [100, 300], morphs: ['mouthPress', 'mouthClose'] },
+                    'B': { frequencies: [100, 400], morphs: ['mouthPress'] },
+                    'F': { frequencies: [1000, 4000], morphs: ['mouthLowerDown'] },
+                    'S': { frequencies: [4000, 8000], morphs: ['mouthSmile'] },
+                    'T': { frequencies: [2000, 6000], morphs: ['tongueOut'] }
+                };
+
+                this.initThreeJS();
+                this.setupControls();
+                this.createVisualizerBars();
+                this.animate();
+            }
+
+            initThreeJS() {
+                // Scene
+                this.scene = new THREE.Scene();
+                this.scene.background = new THREE.Color(0x111111);
+
+                // Camera
+                this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                this.camera.position.z = 2;
+
+                // Renderer
+                this.renderer = new THREE.WebGLRenderer({ antialias: true });
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.shadowMap.enabled = true;
+                this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+                document.getElementById('container').appendChild(this.renderer.domElement);
+
+                // Lights
+                const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+                this.scene.add(ambientLight);
+
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+                directionalLight.position.set(1, 1, 0.5);
+                directionalLight.castShadow = true;
+                this.scene.add(directionalLight);
+
+                const fillLight = new THREE.DirectionalLight(0x4080ff, 0.3);
+                fillLight.position.set(-1, 0, -1);
+                this.scene.add(fillLight);
+
+                // Window resize
+                window.addEventListener('resize', () => {
+                    this.camera.aspect = window.innerWidth / window.innerHeight;
+                    this.camera.updateProjectionMatrix();
+                    this.renderer.setSize(window.innerWidth, window.innerHeight);
+                });
+            }
+
+            setupControls() {
+                const glbFile = document.getElementById('glbFile');
+                const audioFile = document.getElementById('audioFile');
+                const playBtn = document.getElementById('playBtn');
+                const pauseBtn = document.getElementById('pauseBtn');
+                const stopBtn = document.getElementById('stopBtn');
+                const sensitivity = document.getElementById('sensitivity');
+                const smoothing = document.getElementById('smoothing');
+
+                glbFile.addEventListener('change', (e) => this.loadGLB(e.target.files[0]));
+                audioFile.addEventListener('change', (e) => this.loadAudio(e.target.files[0]));
+                
+                playBtn.addEventListener('click', () => this.playAudio());
+                pauseBtn.addEventListener('click', () => this.pauseAudio());
+                stopBtn.addEventListener('click', () => this.stopAudio());
+
+                sensitivity.addEventListener('input', (e) => {
+                    this.sensitivity = parseFloat(e.target.value);
+                    document.getElementById('sensitivityValue').textContent = e.target.value;
+                });
+
+                smoothing.addEventListener('input', (e) => {
+                    this.smoothing = parseFloat(e.target.value);
+                    document.getElementById('smoothingValue').textContent = e.target.value;
+                });
+            }
+
+            async loadGLB(file) {
+                if (!file) return;
+
+                try {
+                    const loader = new THREE.GLTFLoader();
+                    const arrayBuffer = await file.arrayBuffer();
+                    
+                    loader.parse(arrayBuffer, '', (gltf) => {
+                        // Noņemam iepriekšējo modeli
+                        if (this.model) {
+                            this.scene.remove(this.model);
+                        }
+
+                        this.model = gltf.scene;
+                        this.scene.add(this.model);
+
+                        // Meklējam mesh ar morph targets
+                        this.model.traverse((child) => {
+                            if (child.isMesh && child.morphTargetInfluences) {
+                                this.setupMorphTargets(child);
+                            }
+                        });
+
+                        // Centrējam modeli
+                        const box = new THREE.Box3().setFromObject(this.model);
+                        const center = box.getCenter(new THREE.Vector3());
+                        this.model.position.sub(center);
+
+                        this.updateStatus('GLB modelis ielādēts!');
+                    });
+                } catch (error) {
+                    console.error('Kļūda ielādējot GLB:', error);
+                    this.updateStatus('Kļūda ielādējot GLB modeli');
+                }
+            }
+
+            setupMorphTargets(mesh) {
+                this.morphTargets = {};
+                const morphControls = document.getElementById('morphControls');
+                morphControls.innerHTML = '';
+
+                if (mesh.morphTargetDictionary) {
+                    Object.keys(mesh.morphTargetDictionary).forEach(name => {
+                        const index = mesh.morphTargetDictionary[name];
+                        this.morphTargets[name] = { mesh, index };
+                        this.previousValues[name] = 0;
+
+                        // Izveidojam kontroles
+                        const control = document.createElement('div');
+                        control.className = 'morph-control';
+                        
+                        const label = document.createElement('label');
+                        label.textContent = name;
+                        
+                        const slider = document.createElement('input');
+                        slider.type = 'range';
+                        slider.min = '0';
+                        slider.max = '1';
+                        slider.step = '0.01';
+                        slider.value = '0';
+                        slider.addEventListener('input', (e) => {
+                            mesh.morphTargetInfluences[index] = parseFloat(e.target.value);
+                        });
+
+                        control.appendChild(label);
+                        control.appendChild(slider);
+                        morphControls.appendChild(control);
+                    });
+                }
+            }
+
+            async loadAudio(file) {
+                if (!file) return;
+
+                try {
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    
+                    const arrayBuffer = await file.arrayBuffer();
+                    const audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer);
+                    
+                    this.audio = new Audio();
+                    this.audio.src = URL.createObjectURL(file);
+                    
+                    // Skaņas analīze
+                    const source = this.audioContext.createMediaElementSource(this.audio);
+                    this.analyser = this.audioContext.createAnalyser();
+                    this.analyser.fftSize = 256;
+                    
+                    source.connect(this.analyser);
+                    this.analyser.connect(this.audioContext.destination);
+                    
+                    this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+                    
+                    this.updateStatus('Audio fails ielādēts!');
+                } catch (error) {
+                    console.error('Kļūda ielādējot audio:', error);
+                    this.updateStatus('Kļūda ielādējot audio failu');
+                }
+            }
+
+            playAudio() {
+                if (this.audio && !this.isPlaying) {
+                    this.audio.play();
+                    this.isPlaying = true;
+                    this.updateStatus('Audio tiek atskaņots...');
+                }
+            }
+
+            pauseAudio() {
+                if (this.audio && this.isPlaying) {
+                    this.audio.pause();
+                    this.isPlaying = false;
+                    this.updateStatus('Audio apturēts');
+                }
+            }
+
+            stopAudio() {
+                if (this.audio) {
+                    this.audio.pause();
+                    this.audio.currentTime = 0;
+                    this.isPlaying = false;
+                    this.resetMorphTargets();
+                    this.updateStatus('Audio apstādināts');
+                }
+            }
+
+            createVisualizerBars() {
+                const visualizer = document.getElementById('audioVisualizer');
+                for (let i = 0; i < 60; i++) {
+                    const bar = document.createElement('div');
+                    bar.className = 'freq-bar';
+                    bar.style.left = `${i * 4}px`;
+                    bar.style.height = '2px';
+                    visualizer.appendChild(bar);
+                }
+            }
+
+            updateVisualizer() {
+                if (!this.analyser || !this.dataArray) return;
+
+                this.analyser.getByteFrequencyData(this.dataArray);
+                const bars = document.querySelectorAll('.freq-bar');
+                
+                bars.forEach((bar, index) => {
+                    const value = this.dataArray[index] || 0;
+                    const height = (value / 255) * 60;
+                    bar.style.height = `${height}px`;
+                });
+            }
+
+            analyzeAudioForLipSync() {
+                if (!this.analyser || !this.dataArray || !this.model) return;
+
+                this.analyser.getByteFrequencyData(this.dataArray);
+
+                // Analizējam dažādas frekvenču joslas
+                const lowFreq = this.getAverageFrequency(0, 4);      // Zemās frekvences
+                const midFreq = this.getAverageFrequency(4, 16);     // Vidējās frekvences
+                const highFreq = this.getAverageFrequency(16, 64);   // Augstās frekvences
+                const sibilant = this.getAverageFrequency(64, 128);  // Sibilanti (s, sh, f)
+
+                // Aprēķinām visemes
+                const visemes = this.calculateVisemes(lowFreq, midFreq, highFreq, sibilant);
+
+                // Aplikējam uz morph targets
+                this.applyVisemesToMorphTargets(visemes);
+            }
+
+            getAverageFrequency(start, end) {
+                let sum = 0;
+                for (let i = start; i < end && i < this.dataArray.length; i++) {
+                    sum += this.dataArray[i];
+                }
+                return sum / (end - start);
+            }
+
+            calculateVisemes(low, mid, high, sibilant) {
+                const intensity = (low + mid + high) / 3 / 255;
+                const visemes = {};
+
+                // Pamatlogika visemu aprēķinam
+                if (intensity > 0.1) {
+                    // Atvērta mute (A, O)
+                    if (low > mid && low > high) {
+                        visemes.mouthOpen = Math.min(1, (low / 255) * this.sensitivity);
+                        visemes.jawOpen = Math.min(1, (low / 200) * this.sensitivity);
+                    }
+                    
+                    // Smaids/plašs (E, I)
+                    if (mid > low && high > low) {
+                        visemes.mouthSmile = Math.min(1, (mid / 255) * this.sensitivity);
+                        visemes.mouthWide = Math.min(1, (high / 300) * this.sensitivity);
+                    }
+                    
+                    // Noapaļota mute (O, U)
+                    if (low > 50 && mid < high) {
+                        visemes.mouthFunnel = Math.min(1, (low / 180) * this.sensitivity);
+                        visemes.mouthPucker = Math.min(1, (low / 200) * this.sensitivity);
+                    }
+                    
+                    // Sibilanti (S, SH, F)
+                    if (sibilant > 100) {
+                        visemes.mouthSmile = Math.min(1, (sibilant / 255) * this.sensitivity * 0.7);
+                    }
+                    
+                    // Slēgta mute/saspiesta (M, B, P)
+                    if (intensity < 0.3 && low > 30) {
+                        visemes.mouthPress = Math.min(1, (low / 150) * this.sensitivity);
+                        visemes.mouthClose = Math.min(1, intensity * this.sensitivity);
+                    }
+                }
+
+                return visemes;
+            }
+
+            applyVisemesToMorphTargets(visemes) {
+                Object.keys(visemes).forEach(visemeName => {
+                    const targetValue = visemes[visemeName];
+                    
+                    // Meklējam atbilstošos morph targets
+                    Object.keys(this.morphTargets).forEach(morphName => {
+                        if (morphName.toLowerCase().includes(visemeName.toLowerCase()) ||
+                            this.isSimilarMorphTarget(morphName, visemeName)) {
+                            
+                            const { mesh, index } = this.morphTargets[morphName];
+                            const currentValue = mesh.morphTargetInfluences[index];
+                            const previousValue = this.previousValues[morphName] || 0;
+                            
+                            // Gludināšana
+                            const smoothedValue = previousValue * this.smoothing + targetValue * (1 - this.smoothing);
+                            
+                            mesh.morphTargetInfluences[index] = Math.max(0, Math.min(1, smoothedValue));
+                            this.previousValues[morphName] = smoothedValue;
+                        }
+                    });
+                });
+
+                // Atjaunojam slider vērtības UI
+                this.updateMorphSliders();
+            }
+
+            isSimilarMorphTarget(morphName, visemeName) {
+                const similarities = {
+                    'jaw': 'jawOpen',
+                    'mouth_open': 'mouthOpen',
+                    'mouth_smile': 'mouthSmile',
+                    'mouth_funnel': 'mouthFunnel',
+                    'mouth_pucker': 'mouthPucker',
+                    'mouth_press': 'mouthPress',
+                    'mouth_close': 'mouthClose',
+                    'mouth_wide': 'mouthWide'
+                };
+
+                const lowerMorph = morphName.toLowerCase().replace(/[-_\s]/g, '');
+                const lowerViseme = visemeName.toLowerCase();
+                
+                return lowerMorph.includes(lowerViseme) || 
+                       Object.keys(similarities).some(key => 
+                           lowerMorph.includes(key) && similarities[key] === visemeName
+                       );
+            }
+
+            updateMorphSliders() {
+                const sliders = document.querySelectorAll('#morphControls input[type="range"]');
+                sliders.forEach((slider, index) => {
+                    const morphName = Object.keys(this.morphTargets)[index];
+                    if (morphName && this.morphTargets[morphName]) {
+                        const { mesh, index: morphIndex } = this.morphTargets[morphName];
+                        slider.value = mesh.morphTargetInfluences[morphIndex];
+                    }
+                });
+            }
+
+            resetMorphTargets() {
+                Object.keys(this.morphTargets).forEach(morphName => {
+                    const { mesh, index } = this.morphTargets[morphName];
+                    mesh.morphTargetInfluences[index] = 0;
+                    this.previousValues[morphName] = 0;
+                });
+                this.updateMorphSliders();
+            }
+
+            updateStatus(message) {
+                document.getElementById('status').textContent = `Status: ${message}`;
+            }
+
+            animate() {
+                requestAnimationFrame(() => this.animate());
+
+                if (this.isPlaying) {
+                    this.analyzeAudioForLipSync();
+                    this.updateVisualizer();
+                }
+
+                if (this.mixer) {
+                    this.mixer.update(0.016);
+                }
+
+                this.renderer.render(this.scene, this.camera);
+            }
+        }
+
+        // Inicializējam aplikāciju
+        window.addEventListener('DOMContentLoaded', () => {
+            new LipSyncAnimator();
+        });
+    </script>
+</body>
+</html>
